@@ -369,7 +369,7 @@ async function initMedia() {
   await els.localVideo.play().catch(() => {});
 
   audioContext = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
-  await audioContext.audioWorklet.addModule('/audio-worklet.js');
+  await audioContext.audioWorklet.addModule(new URL('./audio-worklet.js', import.meta.url).href);
   await audioContext.resume();
 
   const audioStream = new MediaStream(stream.getAudioTracks());
