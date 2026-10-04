@@ -7,7 +7,9 @@ const els = {
   latencyText: $('latencyText'), qualityText: $('qualityText'), muteBtn: $('muteBtn'), muteLabel: $('muteLabel'),
   cameraBtn: $('cameraBtn'), cameraLabel: $('cameraLabel'), leaveBtn: $('leaveBtn'), fullscreenBtn: $('fullscreenBtn'),
   localVideo: $('localVideo'), localCameraOff: $('localCameraOff'), remoteCanvas: $('remoteCanvas'),
-  remotePlaceholder: $('remotePlaceholder'), videoPlaceholderText: $('videoPlaceholderText'), captureCanvas: $('captureCanvas'), videoStage: $('videoStage')
+  remotePlaceholder: $('remotePlaceholder'), videoPlaceholderText: $('videoPlaceholderText'), captureCanvas: $('captureCanvas'), videoStage: $('videoStage'),
+  chatBtn: $('chatBtn'), chatBadge: $('chatBadge'), chatPanel: $('chatPanel'), closeChatBtn: $('closeChatBtn'),
+  chatMessages: $('chatMessages'), chatEmpty: $('chatEmpty'), chatForm: $('chatForm'), chatInput: $('chatInput'), chatSendBtn: $('chatSendBtn')
 };
 
 const PACKET_AUDIO = 1;
@@ -36,6 +38,7 @@ let pingTimer = null;
 let adaptiveTimer = null;
 let peerCount = 0;
 let latestRtt = 0;
+let unreadChat = 0;
 
 let videoEncoder = null;
 let videoDecoder = null;
@@ -414,6 +417,65 @@ function clearRemoteVideo(message = 'Waiting for your friend') {
   waitingForKeyFrame = true;
 }
 
+function updateChatBadge() {
+  els.chatBadge.textContent = String(Math.min(unreadChat, 99));
+  els.chatBadge.classList.toggle('hidden', unreadChat === 0);
+}
+
+function setChatOpen(open) {
+  els.chatPanel.classList.toggle('hidden', !open);
+  els.chatBtn.classList.toggle('active', open);
+  els.chatBtn.setAttribute('aria-pressed', String(open));
+  els.chatBtn.setAttribute('aria-label', open ? 'Close chat' : 'Open chat');
+  if (open) {
+    unreadChat = 0;
+    updateChatBadge();
+    setTimeout(() => els.chatInput.focus(), 0);
+  }
+}
+
+function addChatMessage(text, mine = false) {
+  const value = String(text || '').trim();
+  if (!value) return;
+  els.chatEmpty?.remove();
+  const row = document.createElement('div');
+  row.className = `chat-message ${mine ? 'mine' : 'theirs'}`;
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble';
+  bubble.textContent = value;
+  const time = document.createElement('span');
+  time.className = 'chat-time';
+  time.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  row.append(bubble, time);
+  els.chatMessages.appendChild(row);
+  els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
+
+  if (!mine && els.chatPanel.classList.contains('hidden')) {
+    unreadChat += 1;
+    updateChatBadge();
+  }
+}
+
+function sendChatMessage() {
+  const text = els.chatInput.value.trim();
+  if (!text || !socket || socket.readyState !== WebSocket.OPEN || peerCount < 2) return;
+  socket.send(JSON.stringify({ type: 'chat', text }));
+  addChatMessage(text, true);
+  els.chatInput.value = '';
+}
+
+function resetChat() {
+  unreadChat = 0;
+  updateChatBadge();
+  setChatOpen(false);
+  els.chatMessages.replaceChildren();
+  const empty = document.createElement('div');
+  empty.id = 'chatEmpty';
+  empty.className = 'chat-empty';
+  empty.textContent = 'No messages yet';
+  els.chatMessages.appendChild(empty);
+}
+
 function startPing() {
   stopPing();
   pingTimer = setInterval(() => {
@@ -522,6 +584,7 @@ function connectSocket() {
       }
     }
     if (msg.type === 'request-keyframe') forceKeyFrame = true;
+    if (msg.type === 'chat' && typeof msg.text === 'string') addChatMessage(msg.text, false);
     if (msg.type === 'error') {
       setStatus('offline', 'Error');
       els.peerText.textContent = msg.message || 'Could not join room';
@@ -588,6 +651,7 @@ function leaveCall() {
   els.joinBtn.disabled = false;
   els.latencyText.textContent = 'Secure transport ready';
   updateQualityLabel();
+  resetChat();
   setSetupMessage('Your browser will ask for microphone and camera permission when you join. The passphrase is never added to the invite URL.');
 }
 
@@ -652,6 +716,12 @@ els.copyBtn.addEventListener('click', copyInvite);
 els.muteBtn.addEventListener('click', toggleMute);
 els.cameraBtn.addEventListener('click', toggleCamera);
 els.fullscreenBtn.addEventListener('click', toggleFullscreen);
+els.chatBtn.addEventListener('click', () => setChatOpen(els.chatPanel.classList.contains('hidden')));
+els.closeChatBtn.addEventListener('click', () => setChatOpen(false));
+els.chatForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  sendChatMessage();
+});
 els.leaveBtn.addEventListener('click', leaveCall);
 window.addEventListener('beforeunload', () => { intentionalClose = true; socket?.close(); });
 
