@@ -1,3 +1,5 @@
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.1/+esm';
+
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -11,6 +13,14 @@ const els = {
   chatBtn: $('chatBtn'), chatBadge: $('chatBadge'), chatPanel: $('chatPanel'), closeChatBtn: $('closeChatBtn'),
   chatMessages: $('chatMessages'), chatEmpty: $('chatEmpty'), chatForm: $('chatForm'), chatInput: $('chatInput'), chatSendBtn: $('chatSendBtn')
 };
+
+const SUPABASE_URL = 'https://cmkmcwdjramjwjeyihij.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_J1SihW9Gzm1Crrnu6dX37g_8qwGDR8c';
+const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+});
+let chatChannel = null;
+let chatSubscribed = false;
 
 const PACKET_AUDIO = 1;
 const PACKET_VIDEO = 2;
@@ -417,6 +427,33 @@ function clearRemoteVideo(message = 'Waiting for your friend') {
   waitingForKeyFrame = true;
 }
 
+async function initChatChannel(room, proof) {
+  if (chatChannel) {
+    try { await supabase.removeChannel(chatChannel); } catch {}
+  }
+  chatSubscribed = false;
+  const topic = `linkline-chat-${room}-${proof.slice(0, 24)}`;
+  chatChannel = supabase
+    .channel(topic, { config: { broadcast: { self: false } } })
+    .on('broadcast', { event: 'message' }, ({ payload }) => {
+      if (payload && typeof payload.text === 'string') {
+        addChatMessage(payload.text.slice(0, 1000), false);
+      }
+    });
+
+  chatChannel.subscribe((status) => {
+    chatSubscribed = status === 'SUBSCRIBED';
+  });
+}
+
+function closeChatChannel() {
+  chatSubscribed = false;
+  if (chatChannel) {
+    supabase.removeChannel(chatChannel).catch(() => {});
+    chatChannel = null;
+  }
+}
+
 function updateChatBadge() {
   els.chatBadge.textContent = String(Math.min(unreadChat, 99));
   els.chatBadge.classList.toggle('hidden', unreadChat === 0);
@@ -456,11 +493,16 @@ function addChatMessage(text, mine = false) {
   }
 }
 
-function sendChatMessage() {
+async function sendChatMessage() {
   const text = els.chatInput.value.trim();
-  if (!text || !socket || socket.readyState !== WebSocket.OPEN || peerCount < 2) return;
-  socket.send(JSON.stringify({ type: 'chat', text }));
-  addChatMessage(text, true);
+  if (!text || !chatChannel || !chatSubscribed || peerCount < 2) return;
+  const result = await chatChannel.send({
+    type: 'broadcast',
+    event: 'message',
+    payload: { text: text.slice(0, 1000) }
+  });
+  if (result !== 'ok') return;
+  addChatMessage(text.slice(0, 1000), true);
   els.chatInput.value = '';
 }
 
@@ -505,6 +547,7 @@ async function joinCall() {
     await initMedia();
     const proof = await roomProof(room, passphrase);
     joinedRoom = { room, proof };
+    await initChatChannel(room, proof);
     intentionalClose = false;
     connectSocket();
     els.roomLabel.textContent = room;
@@ -584,7 +627,6 @@ function connectSocket() {
       }
     }
     if (msg.type === 'request-keyframe') forceKeyFrame = true;
-    if (msg.type === 'chat' && typeof msg.text === 'string') addChatMessage(msg.text, false);
     if (msg.type === 'error') {
       setStatus('offline', 'Error');
       els.peerText.textContent = msg.message || 'Could not join room';
@@ -627,6 +669,7 @@ function leaveCall() {
   clearTimeout(reconnectTimer);
   stopPing();
   joinedRoom = null;
+  closeChatChannel();
   peerCount = 0;
   latestRtt = 0;
   if (socket && socket.readyState <= WebSocket.OPEN) socket.close(1000, 'left');
