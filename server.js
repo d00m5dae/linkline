@@ -115,6 +115,26 @@ function handleJson(peer, message) {
     return;
   }
 
+  if (peer.joined && message.type === 'chat') {
+    const text = String(message.text || '').trim();
+    if (!text || text.length > 1000) return;
+
+    const now = Date.now();
+    if (now - peer.chatWindowStart >= 5000) {
+      peer.chatWindowStart = now;
+      peer.chatMessages = 0;
+    }
+    peer.chatMessages += 1;
+    if (peer.chatMessages > 20) return;
+
+    const room = rooms.get(peer.roomId);
+    if (!room) return;
+    for (const other of room.peers) {
+      if (other !== peer) sendText(other, { type: 'chat', text });
+    }
+    return;
+  }
+
   if (
     peer.joined &&
     (message.type === 'camera-state' || message.type === 'request-keyframe')
@@ -340,7 +360,9 @@ server.on('upgrade', (req, socket) => {
     closed: false,
     windowStart: Date.now(),
     frames: 0,
-    bytes: 0
+    bytes: 0,
+    chatWindowStart: Date.now(),
+    chatMessages: 0
   };
 
   peers.add(peer);
