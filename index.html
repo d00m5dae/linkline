@@ -116,6 +116,25 @@
             <span class="you-label">You</span>
           </div>
 
+          <aside id="chatPanel" class="chat-panel hidden" aria-label="Call chat">
+            <div class="chat-panel-head">
+              <div>
+                <strong>Chat</strong>
+                <span>Only people in this room</span>
+              </div>
+              <button id="closeChatBtn" class="chat-close" type="button" aria-label="Close chat">×</button>
+            </div>
+            <div id="chatMessages" class="chat-messages" aria-live="polite">
+              <div id="chatEmpty" class="chat-empty">No messages yet</div>
+            </div>
+            <form id="chatForm" class="chat-composer">
+              <input id="chatInput" maxlength="1000" autocomplete="off" placeholder="Message…" aria-label="Message" />
+              <button id="chatSendBtn" type="submit" aria-label="Send message">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+              </button>
+            </form>
+          </aside>
+
           <div class="call-bottom-overlay">
             <div class="call-meta">
               <strong id="peerText">Waiting for your friend</strong>
@@ -143,6 +162,14 @@
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg>
                 </span>
                 <span>Full screen</span>
+              </button>
+
+              <button id="chatBtn" class="call-control chat-control" type="button" aria-pressed="false" aria-label="Open chat">
+                <span class="control-icon chat-icon-wrap">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></svg>
+                  <span id="chatBadge" class="chat-badge hidden">0</span>
+                </span>
+                <span>Chat</span>
               </button>
 
               <button id="leaveBtn" class="call-control leave" type="button" aria-label="Leave call">
