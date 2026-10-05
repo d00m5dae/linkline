@@ -69,7 +69,8 @@ async function roomProof(room, passphrase) {
 }
 
 function wsUrl() {
-  return 'wss://vc--new-vc-test--gxc2bvsph8r9.code.run/api/ws';
+  // Render hosts the realtime WebSocket relay.
+  return 'wss://test-ig-7tjb.onrender.com/api/ws';
 }
 
 function setSetupMessage(text, error = false, success = false) {
