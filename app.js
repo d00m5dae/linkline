@@ -16,9 +16,9 @@ const VIDEO_PACKET_VERSION = 1;
 const CODEC_VP8 = 1;
 
 const QUALITY_TIERS = [
-  { name: '720p', width: 1280, height: 720, fps: 20, bitrate: 700_000 },
-  { name: '540p', width: 960, height: 540, fps: 18, bitrate: 400_000 },
-  { name: '360p', width: 640, height: 360, fps: 15, bitrate: 220_000 }
+  { name: '720p', width: 1280, height: 720, fps: 24, bitrate: 900_000 },
+  { name: '540p', width: 960, height: 540, fps: 20, bitrate: 550_000 },
+  { name: '360p', width: 640, height: 360, fps: 15, bitrate: 280_000 }
 ];
 
 let socket = null;
@@ -48,8 +48,6 @@ let waitingForKeyFrame = true;
 let decoderConfigKey = '';
 let videoCodecSupported = false;
 let qualityStableTicks = 0;
-let captureContext = null;
-let remoteContext = null;
 
 function randomRoom() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -134,7 +132,6 @@ function configureEncoder() {
   const tier = currentTier();
   els.captureCanvas.width = tier.width;
   els.captureCanvas.height = tier.height;
-  captureContext = els.captureCanvas.getContext('2d', { alpha: false, desynchronized: true });
   if (videoEncoder.state === 'configured') {
     try { videoEncoder.reset(); } catch {}
   }
@@ -159,7 +156,7 @@ function createEncoder() {
       const tier = currentTier();
       // Real-time calls should drop stale video instead of queueing it.
       // Keyframes get a little more room because they are larger.
-      const maxBacklog = chunk.type === 'key' ? 96_000 : 28_000;
+      const maxBacklog = chunk.type === 'key' ? 192_000 : 64_000;
       if (socket.bufferedAmount > maxBacklog) return;
       socket.send(packetizeVideo(chunk, tier.width, tier.height));
     },
@@ -183,12 +180,9 @@ function createDecoder() {
         if (els.remoteCanvas.width !== width || els.remoteCanvas.height !== height) {
           els.remoteCanvas.width = width;
           els.remoteCanvas.height = height;
-          remoteContext = null;
         }
-        if (!remoteContext) {
-          remoteContext = els.remoteCanvas.getContext('2d', { alpha: false, desynchronized: true });
-        }
-        remoteContext.drawImage(frame, 0, 0, els.remoteCanvas.width, els.remoteCanvas.height);
+        const ctx = els.remoteCanvas.getContext('2d', { alpha: false, desynchronized: true });
+        ctx.drawImage(frame, 0, 0, els.remoteCanvas.width, els.remoteCanvas.height);
         els.remoteCanvas.classList.remove('hidden');
         els.remotePlaceholder.classList.add('hidden');
       } finally {
@@ -257,8 +251,7 @@ function requestRemoteKeyFrame() {
 
 function encodeCurrentFrame(nowMs) {
   if (!videoEncoder || videoEncoder.state !== 'configured' || !cameraEnabled || peerCount < 2) return;
-  if (!stream || els.localVideo.readyState < 2 || videoEncoder.encodeQueueSize > 0) return;
-  if (socket?.bufferedAmount > 40_000) return;
+  if (!stream || els.localVideo.readyState < 2 || videoEncoder.encodeQueueSize > 1) return;
   const tier = currentTier();
   const minGap = 1000 / tier.fps;
   if (nowMs - lastVideoEncodeAt < minGap) return;
@@ -267,15 +260,13 @@ function encodeCurrentFrame(nowMs) {
   const track = stream.getVideoTracks()[0];
   if (!track || track.readyState !== 'live') return;
 
-  if (!captureContext) {
-    captureContext = els.captureCanvas.getContext('2d', { alpha: false, desynchronized: true });
-  }
-  captureContext.drawImage(els.localVideo, 0, 0, tier.width, tier.height);
+  const ctx = els.captureCanvas.getContext('2d', { alpha: false, desynchronized: true });
+  ctx.drawImage(els.localVideo, 0, 0, tier.width, tier.height);
 
   let frame;
   try {
     frame = new VideoFrame(els.captureCanvas, { timestamp: Math.round(performance.now() * 1000) });
-    const periodicKey = framesSinceKey >= tier.fps * 5;
+    const periodicKey = framesSinceKey >= tier.fps * 3;
     videoEncoder.encode(frame, { keyFrame: forceKeyFrame || periodicKey });
     if (forceKeyFrame || periodicKey) {
       forceKeyFrame = false;
@@ -318,8 +309,8 @@ function stopVideoCapture() {
 function adaptQuality() {
   if (!socket || socket.readyState !== WebSocket.OPEN || !videoEncoder || peerCount < 2) return;
   const buffered = socket.bufferedAmount;
-  const overloaded = buffered > 48_000 || latestRtt > 220 || videoEncoder.encodeQueueSize > 0;
-  const healthy = buffered < 12_000 && (latestRtt === 0 || latestRtt < 140) && videoEncoder.encodeQueueSize === 0;
+  const overloaded = buffered > 120_000 || latestRtt > 275 || videoEncoder.encodeQueueSize > 2;
+  const healthy = buffered < 24_000 && (latestRtt === 0 || latestRtt < 160) && videoEncoder.encodeQueueSize === 0;
 
   if (overloaded && currentQualityIndex < QUALITY_TIERS.length - 1) {
     currentQualityIndex += 1;
@@ -332,8 +323,8 @@ function adaptQuality() {
   if (healthy) qualityStableTicks += 1;
   else qualityStableTicks = 0;
 
-  // Stay conservative for ~20 seconds before moving back up a tier.
-  if (qualityStableTicks >= 10 && currentQualityIndex > 0) {
+  // Stay conservative for ~12 seconds before moving back up a tier.
+  if (qualityStableTicks >= 6 && currentQualityIndex > 0) {
     currentQualityIndex -= 1;
     qualityStableTicks = 0;
     configureEncoder();
@@ -402,7 +393,7 @@ async function initMedia() {
     if (!socket || socket.readyState !== WebSocket.OPEN || muted || peerCount < 2) return;
     // Prefer fresh voice over stale queued media. If the socket is badly
     // backed up, drop this tiny audio packet rather than adding more delay.
-    if (event.data instanceof ArrayBuffer && socket.bufferedAmount < 48_000) {
+    if (event.data instanceof ArrayBuffer && socket.bufferedAmount < 128_000) {
       socket.send(packetize(PACKET_AUDIO, event.data));
     }
   };
@@ -563,8 +554,6 @@ function cleanupMedia() {
   playerNode?.disconnect();
   captureNode = null;
   playerNode = null;
-  captureContext = null;
-  remoteContext = null;
   audioContext?.close();
   audioContext = null;
 }
