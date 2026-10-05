@@ -1,3 +1,4 @@
+
 const $ = (id) => document.getElementById(id);
 const els = {
   homeScreen: $('homeScreen'), setupCard: $('setupCard'), callCard: $('callCard'), roomInput: $('roomInput'), passwordInput: $('passwordInput'), showPasswordBtn: $('showPasswordBtn'),
