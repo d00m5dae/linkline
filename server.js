@@ -1,5 +1,5 @@
 import http from 'node:http';
-import crypto from 'node:crypto';
+import { WebSocketServer, WebSocket } from 'ws';
 
 const PORT = Number(process.env.PORT || 10000);
 
@@ -7,68 +7,15 @@ const PACKET_AUDIO = 1;
 const PACKET_VIDEO = 2;
 
 const rooms = new Map();
-const peers = new Set();
-
-function makeAcceptKey(key) {
-  return crypto
-    .createHash('sha1')
-    .update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11')
-    .digest('base64');
-}
-
-function frame(opcode, payload = Buffer.alloc(0)) {
-  if (!Buffer.isBuffer(payload)) payload = Buffer.from(payload);
-
-  const length = payload.length;
-  let header;
-
-  if (length < 126) {
-    header = Buffer.alloc(2);
-    header[1] = length;
-  } else if (length <= 0xffff) {
-    header = Buffer.alloc(4);
-    header[1] = 126;
-    header.writeUInt16BE(length, 2);
-  } else {
-    header = Buffer.alloc(10);
-    header[1] = 127;
-    header.writeBigUInt64BE(BigInt(length), 2);
-  }
-
-  header[0] = 0x80 | opcode;
-  return Buffer.concat([header, payload]);
-}
 
 function sendText(peer, value) {
-  if (peer.closed) return;
-  try {
-    peer.socket.write(frame(0x1, Buffer.from(JSON.stringify(value))));
-  } catch {}
+  if (peer.ws.readyState !== WebSocket.OPEN) return;
+  try { peer.ws.send(JSON.stringify(value)); } catch {}
 }
 
 function sendBinary(peer, data) {
-  if (peer.closed) return;
-  try {
-    peer.socket.write(frame(0x2, data));
-  } catch {}
-}
-
-function sendPong(peer, payload) {
-  if (peer.closed) return;
-  try {
-    peer.socket.write(frame(0xA, payload));
-  } catch {}
-}
-
-function sendClose(peer, code = 1000, reason = '') {
-  if (peer.closed) return;
-  const reasonBytes = Buffer.from(reason);
-  const payload = Buffer.alloc(2 + reasonBytes.length);
-  payload.writeUInt16BE(code, 0);
-  reasonBytes.copy(payload, 2);
-  try {
-    peer.socket.write(frame(0x8, payload));
-  } catch {}
+  if (peer.ws.readyState !== WebSocket.OPEN) return;
+  try { peer.ws.send(data, { binary: true }); } catch {}
 }
 
 function broadcastCount(roomId) {
@@ -76,10 +23,7 @@ function broadcastCount(roomId) {
   if (!room) return;
 
   for (const peer of room.peers) {
-    sendText(peer, {
-      type: 'peer-count',
-      peers: room.peers.size
-    });
+    sendText(peer, { type: 'peer-count', peers: room.peers.size });
   }
 }
 
@@ -91,21 +35,16 @@ function cleanup(peer) {
     const room = rooms.get(peer.roomId);
     if (room) {
       room.peers.delete(peer);
-      if (room.peers.size === 0) {
-        rooms.delete(peer.roomId);
-      } else {
-        broadcastCount(peer.roomId);
-      }
+      if (room.peers.size === 0) rooms.delete(peer.roomId);
+      else broadcastCount(peer.roomId);
     }
   }
-
-  peers.delete(peer);
-
-  try { peer.socket.destroy(); } catch {}
 }
 
 function closePeer(peer, code, reason) {
-  sendClose(peer, code, reason);
+  if (peer.ws.readyState === WebSocket.OPEN || peer.ws.readyState === WebSocket.CONNECTING) {
+    try { peer.ws.close(code, reason); } catch {}
+  }
   cleanup(peer);
 }
 
@@ -177,7 +116,6 @@ function handleBinary(peer, data) {
   if (!peer.joined || data.length < 2) return;
 
   const kind = data[0];
-
   if (kind === PACKET_AUDIO && data.length > 4097) return;
   if (kind === PACKET_VIDEO && data.length > 300_000) return;
   if (kind !== PACKET_AUDIO && kind !== PACKET_VIDEO) return;
@@ -188,107 +126,6 @@ function handleBinary(peer, data) {
   for (const other of room.peers) {
     if (other !== peer) sendBinary(other, data);
   }
-}
-
-function processFrame(peer, opcode, payload) {
-  if (opcode === 0x8) {
-    cleanup(peer);
-    return;
-  }
-
-  if (opcode === 0x9) {
-    sendPong(peer, payload);
-    return;
-  }
-
-  if (opcode === 0xA) return;
-
-  const now = Date.now();
-  if (now - peer.windowStart >= 1000) {
-    peer.windowStart = now;
-    peer.frames = 0;
-    peer.bytes = 0;
-  }
-
-  peer.frames += 1;
-  peer.bytes += payload.length;
-
-  if (peer.frames > 180 || peer.bytes > 3_200_000) return;
-
-  if (opcode === 0x1) {
-    let message;
-    try {
-      message = JSON.parse(payload.toString('utf8'));
-    } catch {
-      return;
-    }
-    handleJson(peer, message);
-  } else if (opcode === 0x2) {
-    handleBinary(peer, payload);
-  }
-}
-
-function parseFrames(peer) {
-  let buffer = peer.buffer;
-
-  while (buffer.length >= 2) {
-    const first = buffer[0];
-    const second = buffer[1];
-
-    const fin = Boolean(first & 0x80);
-    const opcode = first & 0x0f;
-    const masked = Boolean(second & 0x80);
-    let length = second & 0x7f;
-    let offset = 2;
-
-    if (!fin) {
-      closePeer(peer, 1003, 'fragmented frames unsupported');
-      return;
-    }
-
-    if (!masked) {
-      closePeer(peer, 1002, 'client frames must be masked');
-      return;
-    }
-
-    if (length === 126) {
-      if (buffer.length < 4) break;
-      length = buffer.readUInt16BE(2);
-      offset = 4;
-    } else if (length === 127) {
-      if (buffer.length < 10) break;
-      const bigLength = buffer.readBigUInt64BE(2);
-      if (bigLength > 300_000n) {
-        closePeer(peer, 1009, 'frame too large');
-        return;
-      }
-      length = Number(bigLength);
-      offset = 10;
-    }
-
-    if (length > 300_000) {
-      closePeer(peer, 1009, 'frame too large');
-      return;
-    }
-
-    const frameLength = offset + 4 + length;
-    if (buffer.length < frameLength) break;
-
-    const mask = buffer.subarray(offset, offset + 4);
-    offset += 4;
-
-    const payload = Buffer.allocUnsafe(length);
-    for (let i = 0; i < length; i++) {
-      payload[i] = buffer[offset + i] ^ mask[i % 4];
-    }
-
-    buffer = buffer.subarray(frameLength);
-
-    processFrame(peer, opcode, payload);
-    if (peer.closed) return;
-  }
-
-  peer.buffer = buffer;
 }
 
 const server = http.createServer((req, res) => {
@@ -308,42 +145,27 @@ const server = http.createServer((req, res) => {
   res.end('LinkLine call server is online');
 });
 
-server.on('upgrade', (req, socket) => {
+const wss = new WebSocketServer({
+  noServer: true,
+  maxPayload: 300_000,
+  perMessageDeflate: false
+});
+
+server.on('upgrade', (req, socket, head) => {
   if (req.url !== '/api/ws') {
     socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
     socket.destroy();
     return;
   }
 
-  const upgrade = String(req.headers.upgrade || '').toLowerCase();
-  const connection = String(req.headers.connection || '').toLowerCase();
-  const key = req.headers['sec-websocket-key'];
-  const version = req.headers['sec-websocket-version'];
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req);
+  });
+});
 
-  if (
-    upgrade !== 'websocket' ||
-    !connection.includes('upgrade') ||
-    !key ||
-    version !== '13'
-  ) {
-    socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
-    socket.destroy();
-    return;
-  }
-
-  const accept = makeAcceptKey(String(key));
-
-  socket.write(
-    'HTTP/1.1 101 Switching Protocols\r\n' +
-    'Upgrade: websocket\r\n' +
-    'Connection: Upgrade\r\n' +
-    `Sec-WebSocket-Accept: ${accept}\r\n` +
-    '\r\n'
-  );
-
+wss.on('connection', (ws) => {
   const peer = {
-    socket,
-    buffer: Buffer.alloc(0),
+    ws,
     roomId: null,
     joined: false,
     closed: false,
@@ -352,26 +174,45 @@ server.on('upgrade', (req, socket) => {
     bytes: 0
   };
 
-  peers.add(peer);
   console.log('WebSocket connected');
 
-  socket.on('data', (chunk) => {
+  ws.on('message', (data, isBinary) => {
     if (peer.closed) return;
 
-    peer.buffer = Buffer.concat([peer.buffer, chunk]);
+    const now = Date.now();
+    if (now - peer.windowStart >= 1000) {
+      peer.windowStart = now;
+      peer.frames = 0;
+      peer.bytes = 0;
+    }
 
-    if (peer.buffer.length > 600_000) {
-      closePeer(peer, 1009, 'buffer too large');
+    const size = Buffer.isBuffer(data) ? data.length : Buffer.byteLength(data);
+    peer.frames += 1;
+    peer.bytes += size;
+
+    if (peer.frames > 180 || peer.bytes > 3_200_000) return;
+
+    if (isBinary) {
+      handleBinary(peer, Buffer.from(data));
       return;
     }
 
-    parseFrames(peer);
+    let message;
+    try {
+      message = JSON.parse(data.toString());
+    } catch {
+      return;
+    }
+    handleJson(peer, message);
   });
 
-  socket.on('close', () => cleanup(peer));
-  socket.on('end', () => cleanup(peer));
-  socket.on('error', (error) => {
-    console.error('WebSocket socket error:', error.message);
+  ws.on('close', (code, reason) => {
+    console.log(`WebSocket closed code=${code} reason=${reason.toString() || 'none'}`);
+    cleanup(peer);
+  });
+
+  ws.on('error', (error) => {
+    console.error('WebSocket error:', error.message);
     cleanup(peer);
   });
 });
