@@ -49,6 +49,9 @@ function sendText(peer, value) {
 function sendBinary(peer, data) {
   if (peer.closed) return;
   try {
+    // Keep real-time media fresh. If this receiver is already backed up,
+    // drop video before Node's socket queue can grow into visible delay.
+    if (data?.[0] === PACKET_VIDEO && peer.socket.writableLength > 96_000) return;
     peer.socket.write(frame(0x2, data));
   } catch {}
 }
