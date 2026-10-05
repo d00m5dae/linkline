@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: linkline
+    runtime: node
+    repo: https://github.com/d00m5dae/linkline
+    branch: main
+    plan: free
+    region: oregon
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
