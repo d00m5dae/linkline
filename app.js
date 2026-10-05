@@ -1,6 +1,3 @@
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.1/+esm';
-
-
 const $ = (id) => document.getElementById(id);
 const els = {
   homeScreen: $('homeScreen'), setupCard: $('setupCard'), callCard: $('callCard'), roomInput: $('roomInput'), passwordInput: $('passwordInput'), showPasswordBtn: $('showPasswordBtn'),
@@ -9,18 +6,8 @@ const els = {
   latencyText: $('latencyText'), qualityText: $('qualityText'), muteBtn: $('muteBtn'), muteLabel: $('muteLabel'),
   cameraBtn: $('cameraBtn'), cameraLabel: $('cameraLabel'), leaveBtn: $('leaveBtn'), fullscreenBtn: $('fullscreenBtn'),
   localVideo: $('localVideo'), localCameraOff: $('localCameraOff'), remoteCanvas: $('remoteCanvas'),
-  remotePlaceholder: $('remotePlaceholder'), videoPlaceholderText: $('videoPlaceholderText'), captureCanvas: $('captureCanvas'), videoStage: $('videoStage'),
-  chatBtn: $('chatBtn'), chatBadge: $('chatBadge'), chatPanel: $('chatPanel'), closeChatBtn: $('closeChatBtn'),
-  chatMessages: $('chatMessages'), chatEmpty: $('chatEmpty'), chatForm: $('chatForm'), chatInput: $('chatInput'), chatSendBtn: $('chatSendBtn')
+  remotePlaceholder: $('remotePlaceholder'), videoPlaceholderText: $('videoPlaceholderText'), captureCanvas: $('captureCanvas'), videoStage: $('videoStage')
 };
-
-const SUPABASE_URL = 'https://cmkmcwdjramjwjeyihij.supabase.co';
-const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_J1SihW9Gzm1Crrnu6dX37g_8qwGDR8c';
-const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
-});
-let chatChannel = null;
-let chatSubscribed = false;
 
 const PACKET_AUDIO = 1;
 const PACKET_VIDEO = 2;
@@ -48,7 +35,6 @@ let pingTimer = null;
 let adaptiveTimer = null;
 let peerCount = 0;
 let latestRtt = 0;
-let unreadChat = 0;
 
 let videoEncoder = null;
 let videoDecoder = null;
@@ -427,97 +413,6 @@ function clearRemoteVideo(message = 'Waiting for your friend') {
   waitingForKeyFrame = true;
 }
 
-async function initChatChannel(room, proof) {
-  if (chatChannel) {
-    try { await supabase.removeChannel(chatChannel); } catch {}
-  }
-  chatSubscribed = false;
-  const topic = `linkline-chat-${room}-${proof.slice(0, 24)}`;
-  chatChannel = supabase
-    .channel(topic, { config: { broadcast: { self: false } } })
-    .on('broadcast', { event: 'message' }, ({ payload }) => {
-      if (payload && typeof payload.text === 'string') {
-        addChatMessage(payload.text.slice(0, 1000), false);
-      }
-    });
-
-  chatChannel.subscribe((status) => {
-    chatSubscribed = status === 'SUBSCRIBED';
-  });
-}
-
-function closeChatChannel() {
-  chatSubscribed = false;
-  if (chatChannel) {
-    supabase.removeChannel(chatChannel).catch(() => {});
-    chatChannel = null;
-  }
-}
-
-function updateChatBadge() {
-  els.chatBadge.textContent = String(Math.min(unreadChat, 99));
-  els.chatBadge.classList.toggle('hidden', unreadChat === 0);
-}
-
-function setChatOpen(open) {
-  els.chatPanel.classList.toggle('hidden', !open);
-  els.chatBtn.classList.toggle('active', open);
-  els.chatBtn.setAttribute('aria-pressed', String(open));
-  els.chatBtn.setAttribute('aria-label', open ? 'Close chat' : 'Open chat');
-  if (open) {
-    unreadChat = 0;
-    updateChatBadge();
-    setTimeout(() => els.chatInput.focus(), 0);
-  }
-}
-
-function addChatMessage(text, mine = false) {
-  const value = String(text || '').trim();
-  if (!value) return;
-  els.chatEmpty?.remove();
-  const row = document.createElement('div');
-  row.className = `chat-message ${mine ? 'mine' : 'theirs'}`;
-  const bubble = document.createElement('div');
-  bubble.className = 'chat-bubble';
-  bubble.textContent = value;
-  const time = document.createElement('span');
-  time.className = 'chat-time';
-  time.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  row.append(bubble, time);
-  els.chatMessages.appendChild(row);
-  els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
-
-  if (!mine && els.chatPanel.classList.contains('hidden')) {
-    unreadChat += 1;
-    updateChatBadge();
-  }
-}
-
-async function sendChatMessage() {
-  const text = els.chatInput.value.trim();
-  if (!text || !chatChannel || !chatSubscribed || peerCount < 2) return;
-  const result = await chatChannel.send({
-    type: 'broadcast',
-    event: 'message',
-    payload: { text: text.slice(0, 1000) }
-  });
-  if (result !== 'ok') return;
-  addChatMessage(text.slice(0, 1000), true);
-  els.chatInput.value = '';
-}
-
-function resetChat() {
-  unreadChat = 0;
-  updateChatBadge();
-  setChatOpen(false);
-  els.chatMessages.replaceChildren();
-  const empty = document.createElement('div');
-  empty.id = 'chatEmpty';
-  empty.className = 'chat-empty';
-  empty.textContent = 'No messages yet';
-  els.chatMessages.appendChild(empty);
-}
-
 function startPing() {
   stopPing();
   pingTimer = setInterval(() => {
@@ -547,7 +442,6 @@ async function joinCall() {
     await initMedia();
     const proof = await roomProof(room, passphrase);
     joinedRoom = { room, proof };
-    await initChatChannel(room, proof);
     intentionalClose = false;
     connectSocket();
     els.roomLabel.textContent = room;
@@ -669,7 +563,6 @@ function leaveCall() {
   clearTimeout(reconnectTimer);
   stopPing();
   joinedRoom = null;
-  closeChatChannel();
   peerCount = 0;
   latestRtt = 0;
   if (socket && socket.readyState <= WebSocket.OPEN) socket.close(1000, 'left');
@@ -694,7 +587,6 @@ function leaveCall() {
   els.joinBtn.disabled = false;
   els.latencyText.textContent = 'Secure transport ready';
   updateQualityLabel();
-  resetChat();
   setSetupMessage('Your browser will ask for microphone and camera permission when you join. The passphrase is never added to the invite URL.');
 }
 
@@ -759,12 +651,6 @@ els.copyBtn.addEventListener('click', copyInvite);
 els.muteBtn.addEventListener('click', toggleMute);
 els.cameraBtn.addEventListener('click', toggleCamera);
 els.fullscreenBtn.addEventListener('click', toggleFullscreen);
-els.chatBtn.addEventListener('click', () => setChatOpen(els.chatPanel.classList.contains('hidden')));
-els.closeChatBtn.addEventListener('click', () => setChatOpen(false));
-els.chatForm.addEventListener('submit', (event) => {
-  event.preventDefault();
-  sendChatMessage();
-});
 els.leaveBtn.addEventListener('click', leaveCall);
 window.addEventListener('beforeunload', () => { intentionalClose = true; socket?.close(); });
 
